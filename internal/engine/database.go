@@ -75,6 +75,12 @@ func Open(dir string) (*DB, error) {
 			return nil, fmt.Errorf("recovered constraints: %w", err)
 		}
 	}
+	for _, def := range d.catalog.ReferenceList() {
+		if err = d.checkReferenceData(def, nil); err != nil {
+			w.Close()
+			return nil, fmt.Errorf("recovered constraints: %w", err)
+		}
+	}
 	return d, nil
 }
 func (d *DB) usable() error {
@@ -111,11 +117,11 @@ func (d *DB) publish(r journal.Record) error {
 	}
 	return nil
 }
-func (d *DB) Relations() ([]catalog.Relation, []catalog.Index, error) {
+func (d *DB) Relations() ([]catalog.Relation, []catalog.Index, []catalog.Reference, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	if err := d.usable(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return d.catalog.List(), d.catalog.IndexList(), nil
+	return d.catalog.List(), d.catalog.IndexList(), d.catalog.ReferenceList(), nil
 }

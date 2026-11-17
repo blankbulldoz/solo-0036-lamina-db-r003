@@ -368,6 +368,32 @@
       "success": "query execution facts and database resource state produces a verified domain result",
       "failure": "candidates vs scanned vs returned have distinct meanings",
       "verification": "python3 examples/walkthrough.py --workflow statistics"
+    },
+    {
+      "id": "reference-integrity",
+      "name": "cross-relation reference validation at commit final state",
+      "entry": "POST /references then transactional put/delete/commit",
+      "steps": [
+        "transport",
+        "catalog",
+        "engine",
+        "versions",
+        "index",
+        "journal",
+        "snapshot"
+      ],
+      "module_ids": [
+        "transport",
+        "catalog",
+        "engine",
+        "versions",
+        "index",
+        "journal",
+        "snapshot"
+      ],
+      "success": "reference constraint visible in catalog; batched transfer commits atomically; concurrent transfer has exactly one loser",
+      "failure": "dangling reference or deleting a referenced row rejects the whole commit with 409 and closes the transaction; restart and restore keep enforcing",
+      "verification": "python3 examples/walkthrough.py --workflow reference-integrity"
     }
   ],
   "complexity": {

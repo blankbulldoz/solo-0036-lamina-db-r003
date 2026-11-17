@@ -180,6 +180,10 @@ func (d *DB) Commit(id string) (Commit, error) {
 	if len(writes) == 0 {
 		return Commit{Sequence: tx.Snapshot}, nil
 	}
+	if err = d.references(tx.writes); err != nil {
+		d.conflicts++
+		return Commit{}, err
+	}
 	sort.Slice(writes, func(i, j int) bool {
 		if writes[i].Relation == writes[j].Relation {
 			return writes[i].Key < writes[j].Key

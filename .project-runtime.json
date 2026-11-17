@@ -62,6 +62,10 @@
     {
       "workflow_id": "statistics",
       "command": "python3 examples/walkthrough.py --workflow statistics"
+    },
+    {
+      "workflow_id": "reference-integrity",
+      "command": "python3 examples/walkthrough.py --workflow reference-integrity"
     }
   ]
 }

@@ -31,6 +31,14 @@ func (d *DB) apply(r journal.Record) error {
 			return err
 		}
 		d.catalog.Indexes[r.Index.Name] = *r.Index
+	case "reference":
+		if r.Reference == nil || r.Reference.Created != r.Sequence {
+			return fmt.Errorf("invalid reference record")
+		}
+		if err := d.catalog.CheckReference(*r.Reference); err != nil {
+			return err
+		}
+		d.catalog.References[r.Reference.Name] = *r.Reference
 	case "commit":
 		seen := map[string]bool{}
 		for _, m := range r.Writes {

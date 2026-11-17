@@ -69,7 +69,7 @@ func Read(path string) (Image, error) {
 	return Decode(b)
 }
 func Validate(image Image) error {
-	if image.Format != 1 || image.Horizon > image.Sequence || image.Catalog == nil || image.Store == nil || image.Catalog.Relations == nil || image.Catalog.Indexes == nil || image.Store.Tables == nil {
+	if image.Format != 1 || image.Horizon > image.Sequence || image.Catalog == nil || image.Store == nil || image.Catalog.Relations == nil || image.Catalog.Indexes == nil || image.Catalog.References == nil || image.Store.Tables == nil {
 		return fmt.Errorf("invalid image header")
 	}
 	for name, r := range image.Catalog.Relations {
@@ -87,6 +87,18 @@ func Validate(image Image) error {
 		}
 		if _, ok := relation.Column(definition.Column); !ok {
 			return fmt.Errorf("invalid index column")
+		}
+	}
+	for name, definition := range image.Catalog.References {
+		child, childOK := image.Catalog.Relations[definition.Child]
+		parent, parentOK := image.Catalog.Relations[definition.Parent]
+		if !childOK || !parentOK || name != definition.Name || !catalog.ValidName(name) || definition.Created < child.Created || definition.Created < parent.Created || definition.Created > image.Sequence {
+			return fmt.Errorf("invalid reference metadata")
+		}
+		column, ok := child.Column(definition.Column)
+		primary, _ := parent.Column(parent.Primary)
+		if !ok || column.Type != primary.Type {
+			return fmt.Errorf("invalid reference column")
 		}
 	}
 	for name, rows := range image.Store.Tables {
@@ -131,6 +143,21 @@ func Validate(image Image) error {
 				return fmt.Errorf("image violates unique index %s", definition.Name)
 			}
 			seen[value.Key()] = true
+		}
+	}
+	for _, definition := range image.Catalog.References {
+		for _, chain := range image.Store.Tables[definition.Child] {
+			version, exists := versions.Visible(chain, image.Sequence)
+			if !exists {
+				continue
+			}
+			value := version.Row[definition.Column]
+			if value.Null() {
+				continue
+			}
+			if _, ok := versions.Visible(image.Store.Tables[definition.Parent][value.Key()], image.Sequence); !ok {
+				return fmt.Errorf("image violates reference %s", definition.Name)
+			}
 		}
 	}
 

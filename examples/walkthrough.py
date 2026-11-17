@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bounded production walkthroughs using only the public HTTP service."""
 import argparse, concurrent.futures, json, os, pathlib, shutil, socket, subprocess, tempfile, time, urllib.request, urllib.error
-WORKFLOWS=['catalog-create','txn-write','snapshot-read','index-build','query-plan','sql-execute','txn-conflict','restart','checkpoint','backup-restore','changes','vacuum','transaction-close','statistics']
+WORKFLOWS=['catalog-create','txn-write','snapshot-read','index-build','query-plan','sql-execute','txn-conflict','restart','checkpoint','backup-restore','changes','vacuum','transaction-close','statistics','reference-integrity']
 class Session:
  def __init__(self,binary,root,restore=None):
   self.binary=str(binary);self.root=pathlib.Path(root);self.restore=restore;self.process=None;self.log=None
@@ -152,6 +152,53 @@ def walkthrough(name,binary):
     q=s.query(where=[{'column':'amplitude','op':'>=','value':40}],limit=2)
     require(q['matched']==3 and q['scanned']==3 and len(q['rows'])==2 and q['truncated'],'query fact meanings conflated')
     observations={'query':q,'stats':s.stats()}
+   elif name=='reference-integrity':
+    s.call('POST','/relations',{'name':'instruments','primary':'id','columns':[{'name':'id','type':'int'},{'name':'label','type':'text'}]},201)
+    s.call('POST','/relations',{'name':'readings','primary':'sample','columns':[{'name':'sample','type':'int'},{'name':'instrument','type':'int','nullable':True},{'name':'amplitude','type':'int','nullable':True}]},201)
+    def put_row(tx,relation,row,status=200):return s.call('POST',f'/transactions/{tx}/put',{'relation':relation,'row':row},status)
+    def del_row(tx,relation,key,status=200):return s.call('POST',f'/transactions/{tx}/delete',{'relation':relation,'key':key},status)
+    def rows_of(relation,**kw):return s.call('POST','/query',{'relation':relation,**kw})['rows']
+    ref={'name':'reading_instrument','child':'readings','column':'instrument','parent':'instruments'}
+    tx=s.begin();put_row(tx,'readings',{'sample':1,'instrument':99,'amplitude':5});s.commit(tx)
+    s.call('POST','/references',ref,409)
+    tx=s.begin();put_row(tx,'instruments',{'id':99,'label':'old'});s.commit(tx)
+    created=s.call('POST','/references',ref,201)
+    cat=s.call('GET','/catalog');require(any(r['name']=='reading_instrument' for r in cat['references']),'catalog hides reference')
+    before=s.stats()['sequence']
+    tx=s.begin();put_row(tx,'readings',{'sample':2,'instrument':7});s.commit(tx,409)
+    s.commit(tx,404);put_row(tx,'readings',{'sample':2,'instrument':99},404)
+    require(s.stats()['sequence']==before,'rejected commit consumed sequence')
+    require(len(rows_of('readings'))==1,'rejected commit leaked rows')
+    tx=s.begin();put_row(tx,'readings',{'sample':3,'instrument':None,'amplitude':2});s.commit(tx)
+    tx=s.begin()
+    put_row(tx,'instruments',{'id':100,'label':'new'});put_row(tx,'readings',{'sample':1,'instrument':100,'amplitude':5});del_row(tx,'instruments',99)
+    s.commit(tx)
+    require(not rows_of('instruments',where=[{'column':'id','op':'=','value':99}]),'batched transfer not atomic')
+    tx=s.begin();del_row(tx,'instruments',100);s.commit(tx,409)
+    tx=s.begin();put_row(tx,'instruments',{'id':300,'label':'tmp'});put_row(tx,'readings',{'sample':5,'instrument':300});s.commit(tx)
+    tx=s.begin();del_row(tx,'readings',5);del_row(tx,'instruments',300);s.commit(tx)
+    tx=s.begin();put_row(tx,'instruments',{'id':200,'label':'race'});s.commit(tx)
+    a=s.begin();b=s.begin();del_row(a,'instruments',200);put_row(b,'readings',{'sample':6,'instrument':200})
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+     jobs=[pool.submit(s.commit,a),pool.submit(s.commit,b)]
+     outcomes=[]
+     for job in jobs:
+      try:job.result();outcomes.append('commit')
+      except RuntimeError as e:
+       require('got 409' in str(e),'unexpected concurrent failure');outcomes.append('conflict')
+    require(outcomes.count('conflict')==1,'concurrent transfer must have exactly one loser')
+    parents=rows_of('instruments',where=[{'column':'id','op':'=','value':200}])
+    children=rows_of('readings',where=[{'column':'instrument','op':'=','value':200}])
+    require(len(parents)==len(children),'dangling reference after concurrent transfer')
+    s.call('POST','/checkpoint');s.stop();s.start()
+    cat=s.call('GET','/catalog');require(any(r['name']=='reading_instrument' for r in cat['references']),'restart lost reference')
+    tx=s.begin();put_row(tx,'readings',{'sample':7,'instrument':7});s.commit(tx,409)
+    backup=s.call('GET','/backup',raw=True);path=temp/'refs.lmi';path.write_bytes(backup)
+    other=Session(binary,temp/'refs-restored',path).start()
+    cat=other.call('GET','/catalog');require(any(r['name']=='reading_instrument' for r in cat['references']),'restore lost reference')
+    require(other.call('POST','/query',{'relation':'readings'})['rows']==rows_of('readings'),'restored rows diverge')
+    tx=other.begin();other.call('POST',f'/transactions/{tx}/put',{'relation':'readings','row':{'sample':8,'instrument':7}});other.commit(tx,409)
+    observations={'reference':created,'race':outcomes,'restored_references':cat['references']}
    else:raise ValueError(name)
    return {'workflow':name,'status':'observed','observations':observations}
   finally:
